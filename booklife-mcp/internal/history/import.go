@@ -1,6 +1,7 @@
 package history
 
 import (
+	"bytes"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
@@ -283,6 +284,146 @@ func (im *Importer) ExportForImport(entries []models.TimelineEntry, activity str
 	}
 
 	return filePath, count, nil
+}
+
+// ImportGoodreadsCSV imports reading history from a Goodreads export CSV file
+func (im *Importer) ImportGoodreadsCSV(data []byte) (int, error) {
+	entries, err := ParseGoodreadsCSV(data)
+	if err != nil {
+		return 0, err
+	}
+	return im.store.ImportTimeline(&models.TimelineResponse{
+		Version:  1,
+		Timeline: entries,
+	})
+}
+
+// ParseGoodreadsCSV parses a Goodreads library export CSV into timeline entries
+func ParseGoodreadsCSV(data []byte) ([]models.TimelineEntry, error) {
+	r := csv.NewReader(bytes.NewReader(data))
+
+	headers, err := r.Read()
+	if err != nil {
+		return nil, fmt.Errorf("reading CSV header: %w", err)
+	}
+
+	idx := make(map[string]int, len(headers))
+	for i, h := range headers {
+		idx[strings.TrimSpace(h)] = i
+	}
+
+	for _, required := range []string{"Title", "Author", "Exclusive Shelf"} {
+		if _, ok := idx[required]; !ok {
+			return nil, fmt.Errorf("missing required column %q — is this a Goodreads export?", required)
+		}
+	}
+
+	get := func(row []string, col string) string {
+		i, ok := idx[col]
+		if !ok || i >= len(row) {
+			return ""
+		}
+		return strings.TrimSpace(row[i])
+	}
+
+	var entries []models.TimelineEntry
+	for {
+		row, err := r.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("reading CSV row: %w", err)
+		}
+
+		title := get(row, "Title")
+		author := get(row, "Author")
+		isbn := goodreadsCleanISBN(get(row, "ISBN"))
+
+		var activity string
+		switch get(row, "Exclusive Shelf") {
+		case "read":
+			activity = "Returned"
+		case "currently-reading":
+			activity = "Borrowed"
+		default: // "to-read" and anything else
+			activity = "WantToRead"
+		}
+
+		// Prefer Date Read, fall back to Date Added; use 0 if neither present (keeps import idempotent)
+		var ts int64
+		if s := get(row, "Date Read"); s != "" {
+			ts = goodreadsParseDate(s)
+		}
+		if ts == 0 {
+			if s := get(row, "Date Added"); s != "" {
+				ts = goodreadsParseDate(s)
+			}
+		}
+
+		entries = append(entries, models.TimelineEntry{
+			TitleID:    goodreadsTitleID(isbn, title, author),
+			Title:      title,
+			Author:     author,
+			Publisher:  get(row, "Publisher"),
+			ISBN:       isbn,
+			Timestamp:  ts,
+			Activity:   activity,
+			Details:    get(row, "My Review"),
+			Library:    "Goodreads",
+			LibraryKey: "goodreads",
+			Format:     goodreadsBindingToFormat(get(row, "Binding")),
+		})
+	}
+
+	return entries, nil
+}
+
+// goodreadsCleanISBN strips Excel ="..." formula formatting from Goodreads ISBN fields
+func goodreadsCleanISBN(raw string) string {
+	if strings.HasPrefix(raw, `="`) && strings.HasSuffix(raw, `"`) {
+		return raw[2 : len(raw)-1]
+	}
+	return raw
+}
+
+// goodreadsParseDate parses a Goodreads date string (YYYY/MM/DD) to Unix milliseconds
+func goodreadsParseDate(s string) int64 {
+	t, err := time.Parse("2006/01/02", s)
+	if err != nil {
+		return 0
+	}
+	return t.UnixMilli()
+}
+
+// goodreadsTitleID generates a stable title ID for a Goodreads entry
+func goodreadsTitleID(isbn, title, author string) string {
+	if isbn != "" {
+		return "gr-" + isbn
+	}
+	slug := strings.ToLower(title + "-" + author)
+	slug = strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			return r
+		}
+		return '-'
+	}, slug)
+	for strings.Contains(slug, "--") {
+		slug = strings.ReplaceAll(slug, "--", "-")
+	}
+	return "gr-" + strings.Trim(slug, "-")
+}
+
+// goodreadsBindingToFormat maps Goodreads binding strings to BookLife format values
+func goodreadsBindingToFormat(binding string) string {
+	switch strings.ToLower(binding) {
+	case "audible audio", "audiobook", "audio cd", "mp3 cd":
+		return "audiobook"
+	case "kindle edition", "ebook":
+		return "ebook"
+	default:
+		return "ebook"
+	}
 }
 
 // formatAuthorLF converts "First Last" to "Last, First"

@@ -37,6 +37,8 @@ func main() {
 		cmdSync()
 	case "import-timeline":
 		cmdImportTimeline()
+	case "import-goodreads":
+		cmdImportGoodreads()
 	case "version", "-v", "--version":
 		cmdVersion()
 	case "help", "-h", "--help":
@@ -66,6 +68,7 @@ Commands:
   libby-connect    Connect a Libby clone code (you have 40 seconds!)
   sync             Sync reading history to Hardcover
   import-timeline  Import Libby timeline JSON file
+  import-goodreads Import Goodreads library export CSV file
   version          Show version information
   help             Show this help message
 
@@ -82,6 +85,12 @@ Import Timeline:
   booklife import-timeline <json_file> [--config PATH]
 
   Imports Libby timeline from a JSON file (exported from Libby app).
+
+Import Goodreads:
+  booklife import-goodreads <csv_file> [--config PATH]
+
+  Imports reading history from a Goodreads library export CSV file.
+  Export from Goodreads: My Books > Import/Export > Export Library.
 
 Config directories:
   Linux/macOS:     ` + configDir + `
@@ -425,4 +434,45 @@ func cmdImportTimeline() {
 	}
 
 	fmt.Printf("✅ Imported %d timeline entries from %s\n", count, jsonPath)
+}
+
+func cmdImportGoodreads() {
+	if len(os.Args) < 3 {
+		fmt.Fprintln(os.Stderr, "Error: CSV file path required")
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "Usage: booklife import-goodreads <csv_file> [--config PATH]")
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "Export from Goodreads: My Books > Import/Export > Export Library")
+		os.Exit(1)
+	}
+
+	csvPath := os.Args[2]
+
+	dataDir, err := dirs.DataDir()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to get data directory: %v\n", err)
+		os.Exit(1)
+	}
+
+	data, err := os.ReadFile(csvPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to read CSV file: %v\n", err)
+		os.Exit(1)
+	}
+
+	store, err := history.NewStore(dataDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to open history store: %v\n", err)
+		os.Exit(1)
+	}
+	defer store.Close()
+
+	importer := history.NewImporter(store)
+	count, err := importer.ImportGoodreadsCSV(data)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to import Goodreads CSV: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("✅ Imported %d entries from %s\n", count, csvPath)
 }

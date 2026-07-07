@@ -11,6 +11,7 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/user/booklife-mcp/internal/models"
 	"github.com/user/booklife-mcp/internal/providers"
+	"github.com/user/booklife-mcp/internal/titlenorm"
 )
 
 // Service handles metadata enrichment for history entries
@@ -100,7 +101,6 @@ func (s *Service) getBooksToEnrich(force bool) ([]bookToEnrich, error) {
 			SELECT id, title, author, isbn
 			FROM history
 			WHERE activity = 'Returned'
-			  AND (timestamp IS NULL OR timestamp > 0)
 			ORDER BY timestamp DESC NULLS LAST
 		`
 	} else {
@@ -111,7 +111,6 @@ func (s *Service) getBooksToEnrich(force bool) ([]bookToEnrich, error) {
 			LEFT JOIN book_enrichment e ON h.id = e.history_id
 			WHERE h.activity = 'Returned'
 				AND e.id IS NULL
-				AND (h.timestamp IS NULL OR h.timestamp > 0)
 			ORDER BY h.timestamp DESC NULLS LAST
 		`
 	}
@@ -217,22 +216,30 @@ func (s *Service) CancelJob(jobID string) error {
 
 // EnrichBook enriches a single history entry with external metadata
 func (s *Service) EnrichBook(ctx context.Context, historyID int, title, author, isbn string) (*models.BookEnrichment, error) {
+	norm := titlenorm.Normalize(title)
+	searchTitle := norm.Cleaned // cleaned title used for all API searches
+
 	// Try Hardcover enricher first (primary source with rich metadata)
 	var hcData *HardcoverData
 	var hcErr error
 
 	if s.hardcoverEnricher != nil {
-		// Try direct enrichment from Hardcover
-		hcData, hcErr = s.hardcoverEnricher.GetByTitleAuthor(ctx, title, author)
+		hcData, hcErr = s.hardcoverEnricher.GetByTitleAuthor(ctx, searchTitle, author)
+		// On miss with cleaned title, retry with raw before giving up.
+		if (hcErr != nil || hcData == nil) && searchTitle != norm.Raw {
+			hcData, hcErr = s.hardcoverEnricher.GetByTitleAuthor(ctx, norm.Raw, author)
+		}
 		if hcErr == nil && hcData != nil {
-			// Found in Hardcover with full enrichment data
 			return s.saveEnrichment(ctx, historyID, title, author, hcData, nil, nil)
 		}
 	}
 
 	// If no ISBN, try to get it from Hardcover search (for ISBN-based fallback to OL/GB)
 	if isbn == "" && s.hardcover != nil {
-		books, _, err := s.hardcover.SearchBooks(ctx, title+" "+author, 0, 3)
+		books, _, err := s.hardcover.SearchBooks(ctx, searchTitle+" "+author, 0, 3)
+		if (err != nil || len(books) == 0) && searchTitle != norm.Raw {
+			books, _, err = s.hardcover.SearchBooks(ctx, norm.Raw+" "+author, 0, 3)
+		}
 		if err == nil && len(books) > 0 {
 			// Try to find best match by author
 			for _, book := range books {
@@ -275,10 +282,12 @@ func (s *Service) EnrichBook(ctx context.Context, historyID int, title, author, 
 		if isbn != "" {
 			olData, olErr = s.openLibrary.GetByISBN(ctx, isbn)
 		} else {
-			olData, olErr = s.openLibrary.SearchByTitleAuthor(ctx, title, author)
+			olData, olErr = s.openLibrary.SearchByTitleAuthor(ctx, searchTitle, author)
+			if (olErr != nil || olData == nil) && searchTitle != norm.Raw {
+				olData, olErr = s.openLibrary.SearchByTitleAuthor(ctx, norm.Raw, author)
+			}
 		}
 		if olErr == nil && olData != nil {
-			// Found in Open Library
 			return s.saveEnrichment(ctx, historyID, title, author, nil, olData, nil)
 		}
 	}
@@ -288,7 +297,10 @@ func (s *Service) EnrichBook(ctx context.Context, historyID int, title, author, 
 		if isbn != "" {
 			gbData, gbErr = s.googleBooks.GetByISBN(ctx, isbn)
 		} else {
-			gbData, gbErr = s.googleBooks.SearchByTitleAuthor(ctx, title, author)
+			gbData, gbErr = s.googleBooks.SearchByTitleAuthor(ctx, searchTitle, author)
+			if (gbErr != nil || gbData == nil) && searchTitle != norm.Raw {
+				gbData, gbErr = s.googleBooks.SearchByTitleAuthor(ctx, norm.Raw, author)
+			}
 		}
 		if gbErr == nil && gbData != nil {
 			// Found in Google Books
