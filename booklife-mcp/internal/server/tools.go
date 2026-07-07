@@ -496,6 +496,16 @@ Example: {}`,
 	}, s.handleGetHistoryStats)
 
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
+		Name: "history_add",
+		Description: `Add a single book to your local reading history.
+Required: title, author.
+Optional: activity (Returned/Borrowed/WantToRead, default: Returned), date (YYYY-MM-DD),
+          isbn, publisher, format (ebook/audiobook/book), library, details.
+Example: {"title": "Project Hail Mary", "author": "Andy Weir", "date": "2023-04-15"}
+Example: {"title": "Dune", "author": "Frank Herbert", "activity": "WantToRead"}`,
+	}, s.handleHistoryAdd)
+
+	mcp.AddTool(s.mcpServer, &mcp.Tool{
 		Name: "history_books_by_author",
 		Description: `List all books by an author from your local reading history.
 Returns one entry per distinct book (deduplicated), with read date and format.

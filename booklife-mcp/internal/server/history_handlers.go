@@ -50,6 +50,19 @@ type HistoryBooksByAuthorInput struct {
 	PageSize int    `json:"page_size,omitempty"`
 }
 
+// HistoryAddInput for the history_add tool
+type HistoryAddInput struct {
+	Title     string `json:"title"`
+	Author    string `json:"author"`
+	Activity  string `json:"activity,omitempty"`  // Returned (default), Borrowed, WantToRead
+	Date      string `json:"date,omitempty"`      // YYYY-MM-DD; omit for unknown
+	ISBN      string `json:"isbn,omitempty"`
+	Publisher string `json:"publisher,omitempty"`
+	Format    string `json:"format,omitempty"`    // ebook, audiobook, book
+	Library   string `json:"library,omitempty"`
+	Details   string `json:"details,omitempty"`
+}
+
 // ExportForImportInput for the history_export_for_import tool
 type ExportForImportInput struct {
 	Activity string `json:"activity,omitempty"` // "Returned" (default), "Borrowed", "Reserved", "CheckedIn"
@@ -330,6 +343,84 @@ func (s *Server) handleGetHistoryStats(ctx context.Context, req *mcp.CallToolReq
 			},
 		},
 	}, stats, nil
+}
+
+func (s *Server) handleHistoryAdd(ctx context.Context, req *mcp.CallToolRequest, input HistoryAddInput) (*mcp.CallToolResult, any, error) {
+	if s.historyStore == nil {
+		return nil, nil, fmt.Errorf("history store is not available")
+	}
+	if strings.TrimSpace(input.Title) == "" {
+		return nil, nil, fmt.Errorf("title is required")
+	}
+	if strings.TrimSpace(input.Author) == "" {
+		return nil, nil, fmt.Errorf("author is required")
+	}
+
+	activity := input.Activity
+	if activity == "" {
+		activity = "Returned"
+	}
+	switch activity {
+	case "Returned", "Borrowed", "WantToRead":
+	default:
+		return nil, nil, fmt.Errorf("activity must be Returned, Borrowed, or WantToRead")
+	}
+
+	var ts int64
+	if input.Date != "" {
+		t, err := time.Parse("2006-01-02", input.Date)
+		if err != nil {
+			return nil, nil, fmt.Errorf("date must be YYYY-MM-DD: %w", err)
+		}
+		ts = t.UnixMilli()
+	}
+	// ts == 0 means "unknown date", consistent with other imports
+
+	library := input.Library
+	if library == "" {
+		library = "Manual"
+	}
+
+	entry := models.TimelineEntry{
+		TitleID:    history.MakeTitleID(input.ISBN, input.Title, input.Author),
+		Title:      input.Title,
+		Author:     input.Author,
+		ISBN:       input.ISBN,
+		Publisher:  input.Publisher,
+		Format:     input.Format,
+		Activity:   activity,
+		Timestamp:  ts,
+		Library:    library,
+		LibraryKey: strings.ToLower(strings.ReplaceAll(library, " ", "-")),
+		Details:    input.Details,
+	}
+
+	_, err := s.historyStore.ImportTimeline(&models.TimelineResponse{
+		Version:  1,
+		Timeline: []models.TimelineEntry{entry},
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("adding history entry: %w", err)
+	}
+
+	dateStr := "unknown date"
+	if ts > 0 {
+		dateStr = time.UnixMilli(ts).Format("2006-01-02")
+	}
+
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{
+			&mcp.TextContent{
+				Text: fmt.Sprintf("✅ Added \"%s\" by %s (%s on %s)\n   ID: %s\n",
+					input.Title, input.Author, activity, dateStr, entry.TitleID),
+			},
+		},
+	}, map[string]any{
+		"title_id": entry.TitleID,
+		"title":    entry.Title,
+		"author":   entry.Author,
+		"activity": activity,
+	}, nil
 }
 
 func (s *Server) handleHistoryBooksByAuthor(ctx context.Context, req *mcp.CallToolRequest, input HistoryBooksByAuthorInput) (*mcp.CallToolResult, any, error) {

@@ -396,6 +396,13 @@ func goodreadsParseDate(s string) int64 {
 	return t.UnixMilli()
 }
 
+// MakeTitleID generates a stable, de-duplicatable ID for a book entry.
+// Uses ISBN when available; otherwise slugifies title+author.
+// The "gr-" prefix is kept for backwards compatibility with existing imports.
+func MakeTitleID(isbn, title, author string) string {
+	return goodreadsTitleID(isbn, title, author)
+}
+
 // goodreadsTitleID generates a stable title ID for a Goodreads entry
 func goodreadsTitleID(isbn, title, author string) string {
 	if isbn != "" {
