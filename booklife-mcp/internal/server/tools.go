@@ -482,9 +482,10 @@ Example: {}`,
 		Name: "history_get",
 		Description: `Get reading history from local store with pagination.
 Returns all imported timeline entries and synced loans.
-Supports optional query parameter for searching.
+Supports optional query parameter for searching by title or author.
 Example: {"page": 1, "page_size": 20}
-Example: {"query": "Sanderson", "page": 1}`,
+Example: {"query": "Sanderson", "page": 1}
+Example: {"query": "Crawler Carl", "page": 1}`,
 	}, s.handleGetLocalHistory)
 
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
@@ -493,6 +494,15 @@ Example: {"query": "Sanderson", "page": 1}`,
 Returns breakdowns by format, library, year, and totals.
 Example: {}`,
 	}, s.handleGetHistoryStats)
+
+	mcp.AddTool(s.mcpServer, &mcp.Tool{
+		Name: "history_books_by_author",
+		Description: `List all books by an author from your local reading history.
+Returns one entry per distinct book (deduplicated), with read date and format.
+Partial author name matching is supported.
+Example: {"author": "Andy Weir"}
+Example: {"author": "Sanderson", "page_size": 50}`,
+	}, s.handleHistoryBooksByAuthor)
 
 	// === Sync (Progressive Disclosure) ===
 

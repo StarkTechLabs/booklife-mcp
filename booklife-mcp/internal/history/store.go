@@ -744,6 +744,77 @@ func (s *Store) GetSyncStats(targetSystem string) (map[string]interface{}, error
 	return stats, nil
 }
 
+// AuthorBook is one deduplicated book from GetBooksByAuthor.
+type AuthorBook struct {
+	TitleID      string
+	Title        string
+	Author       string
+	ISBN         string
+	Format       string
+	LastActivity string    // "Returned", "Borrowed", etc.
+	LastDate     time.Time // date of LastActivity
+	ReadDate     time.Time // date of most-recent Returned, zero if never
+	EventCount   int
+}
+
+// GetBooksByAuthor returns deduplicated books matching an author name (partial, case-insensitive).
+// Each title_id appears at most once; the most recent Returned timestamp is used as the read date.
+func (s *Store) GetBooksByAuthor(author string, offset, limit int) ([]AuthorBook, int, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	pattern := "%" + author + "%"
+
+	var total int
+	err := s.db.QueryRow(
+		`SELECT COUNT(DISTINCT title_id) FROM history WHERE author LIKE ?`, pattern,
+	).Scan(&total)
+	if err != nil {
+		return nil, 0, fmt.Errorf("counting author books: %w", err)
+	}
+
+	rows, err := s.db.Query(`
+		SELECT
+			title_id,
+			title,
+			author,
+			COALESCE(isbn, '')                                      AS isbn,
+			format,
+			MAX(timestamp)                                          AS last_ts,
+			MAX(CASE WHEN activity = 'Returned' THEN timestamp ELSE 0 END) AS read_ts,
+			activity,
+			COUNT(*)                                                AS event_count
+		FROM history
+		WHERE author LIKE ?
+		GROUP BY title_id
+		ORDER BY last_ts DESC
+		LIMIT ? OFFSET ?
+	`, pattern, limit, offset)
+	if err != nil {
+		return nil, 0, fmt.Errorf("querying author books: %w", err)
+	}
+	defer rows.Close()
+
+	var books []AuthorBook
+	for rows.Next() {
+		var b AuthorBook
+		var lastMS, readMS int64
+		if err := rows.Scan(&b.TitleID, &b.Title, &b.Author, &b.ISBN, &b.Format,
+			&lastMS, &readMS, &b.LastActivity, &b.EventCount); err != nil {
+			return nil, 0, fmt.Errorf("scanning author book: %w", err)
+		}
+		if lastMS > 0 {
+			b.LastDate = time.UnixMilli(lastMS)
+		}
+		if readMS > 0 {
+			b.ReadDate = time.UnixMilli(readMS)
+		}
+		books = append(books, b)
+	}
+
+	return books, total, nil
+}
+
 // GetByTitleID returns the most recent entry for a title
 func (s *Store) GetByTitleID(titleID string) (*models.TimelineEntry, error) {
 	s.mu.RLock()

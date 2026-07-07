@@ -26,8 +26,9 @@ type SyncCurrentLoansInput struct {
 
 // GetLocalHistoryInput for the history_get tool
 type GetLocalHistoryInput struct {
-	Page     int `json:"page,omitempty"`
-	PageSize int `json:"page_size,omitempty"`
+	Query    string `json:"query,omitempty"`
+	Page     int    `json:"page,omitempty"`
+	PageSize int    `json:"page_size,omitempty"`
 }
 
 // SearchLocalHistoryInput for the history_search tool
@@ -40,6 +41,13 @@ type SearchLocalHistoryInput struct {
 // GetHistoryStatsInput for the history_stats tool
 type GetHistoryStatsInput struct {
 	// No input needed
+}
+
+// HistoryBooksByAuthorInput for the history_books_by_author tool
+type HistoryBooksByAuthorInput struct {
+	Author   string `json:"author"`
+	Page     int    `json:"page,omitempty"`
+	PageSize int    `json:"page_size,omitempty"`
 }
 
 // ExportForImportInput for the history_export_for_import tool
@@ -135,13 +143,25 @@ func (s *Server) handleGetLocalHistory(ctx context.Context, req *mcp.CallToolReq
 	}
 
 	offset := (page - 1) * pageSize
-	entries, total, err := s.historyStore.GetHistory(offset, pageSize)
+
+	var entries []models.TimelineEntry
+	var total int
+	var err error
+	if input.Query != "" {
+		entries, total, err = s.historyStore.SearchHistory(input.Query, offset, pageSize)
+	} else {
+		entries, total, err = s.historyStore.GetHistory(offset, pageSize)
+	}
 	if err != nil {
 		return nil, nil, fmt.Errorf("getting history: %w", err)
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("📚 Reading History (Page %d, %d total entries)\n\n", page, total))
+	if input.Query != "" {
+		sb.WriteString(fmt.Sprintf("🔍 History results for \"%s\" (%d total)\n\n", input.Query, total))
+	} else {
+		sb.WriteString(fmt.Sprintf("📚 Reading History (Page %d, %d total entries)\n\n", page, total))
+	}
 
 	for _, entry := range entries {
 		date := time.UnixMilli(entry.Timestamp).Format("2006-01-02")
@@ -310,6 +330,79 @@ func (s *Server) handleGetHistoryStats(ctx context.Context, req *mcp.CallToolReq
 			},
 		},
 	}, stats, nil
+}
+
+func (s *Server) handleHistoryBooksByAuthor(ctx context.Context, req *mcp.CallToolRequest, input HistoryBooksByAuthorInput) (*mcp.CallToolResult, any, error) {
+	if s.historyStore == nil {
+		return nil, nil, fmt.Errorf("history store is not available")
+	}
+	if strings.TrimSpace(input.Author) == "" {
+		return nil, nil, fmt.Errorf("author is required")
+	}
+	if len(input.Author) > 200 {
+		return nil, nil, fmt.Errorf("author too long (max 200 characters)")
+	}
+
+	page := input.Page
+	if page < 1 {
+		page = 1
+	}
+	pageSize := input.PageSize
+	if pageSize < 1 {
+		pageSize = 50
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+	offset := (page - 1) * pageSize
+
+	books, total, err := s.historyStore.GetBooksByAuthor(input.Author, offset, pageSize)
+	if err != nil {
+		return nil, nil, fmt.Errorf("querying books by author: %w", err)
+	}
+
+	var sb strings.Builder
+	if total == 0 {
+		sb.WriteString(fmt.Sprintf("No books found for author matching \"%s\".\n", input.Author))
+	} else {
+		sb.WriteString(fmt.Sprintf("Books by \"%s\" (%d total)\n\n", input.Author, total))
+		for i, b := range books {
+			n := offset + i + 1
+			sb.WriteString(fmt.Sprintf("%d. %s\n", n, b.Title))
+			sb.WriteString(fmt.Sprintf("   Author: %s\n", b.Author))
+			if !b.ReadDate.IsZero() {
+				sb.WriteString(fmt.Sprintf("   Read: %s\n", b.ReadDate.Format("2006-01-02")))
+			} else if !b.LastDate.IsZero() {
+				sb.WriteString(fmt.Sprintf("   %s: %s\n", b.LastActivity, b.LastDate.Format("2006-01-02")))
+			}
+			if b.Format != "" {
+				sb.WriteString(fmt.Sprintf("   Format: %s\n", b.Format))
+			}
+			if b.ISBN != "" {
+				sb.WriteString(fmt.Sprintf("   ISBN: %s\n", b.ISBN))
+			}
+			sb.WriteString("\n")
+		}
+
+		totalPages := (total + pageSize - 1) / pageSize
+		sb.WriteString(fmt.Sprintf("--- Page %d of %d (%d shown, %d total) ---", page, totalPages, len(books), total))
+		if page < totalPages {
+			sb.WriteString(fmt.Sprintf(" (use page=%d for more)", page+1))
+		}
+		sb.WriteString("\n")
+	}
+
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{
+			&mcp.TextContent{Text: sb.String()},
+		},
+	}, map[string]any{
+		"author":     input.Author,
+		"page":       page,
+		"page_size":  pageSize,
+		"total":      total,
+		"book_count": len(books),
+	}, nil
 }
 
 func (s *Server) handleExportForImport(ctx context.Context, req *mcp.CallToolRequest, input ExportForImportInput) (*mcp.CallToolResult, any, error) {
